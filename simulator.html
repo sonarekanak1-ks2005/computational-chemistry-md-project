@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Interactive Molecular Dynamics Simulator (Lennard-Jones Fluid)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 20px; }
+        header h1 { margin: 0 0 8px 0; color: #38bdf8; font-size: 26px; }
+        header p { margin: 0; color: #94a3b8; font-size: 14px; }
+        .grid { display: grid; grid-template-columns: 520px 1fr; gap: 20px; }
+        .card { background: #1e293b; border-radius: 12px; padding: 16px; border: 1px solid #334155; }
+        canvas { background: #020617; border-radius: 8px; display: block; border: 1px solid #475569; }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
+        .control-group label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+        .control-group input[type=range] { width: 100%; }
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
+        .stat-box { background: #0f172a; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #334155; }
+        .stat-val { font-size: 18px; font-weight: bold; color: #38bdf8; }
+        .stat-lbl { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+        .btn { background: #0284c7; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; width: 100%; }
+        .btn:hover { background: #0369a1; }
+        .btn-reset { background: #475569; margin-top: 8px; }
+        .btn-reset:hover { background: #334155; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Molecular Dynamics Simulation (Lennard-Jones Argon)</h1>
+        <p>Interactive 2D Velocity-Verlet Integrator with Periodic Boundary Conditions (Modules 3, 4 & 5)</p>
+    </header>
+
+    <div class="grid">
+        <div class="card">
+            <canvas id="simCanvas" width="500" height="500"></canvas>
+            <div class="controls">
+                <div class="control-group">
+                    <label>Target Temperature (T*): <span id="tempVal">0.80</span></label>
+                    <input type="range" id="tempSlider" min="0.1" max="2.0" step="0.05" value="0.80">
+                </div>
+                <div class="control-group">
+                    <label>Interaction Strength (ε): <span id="epsVal">1.0</span></label>
+                    <input type="range" id="epsSlider" min="0.1" max="3.0" step="0.1" value="1.0">
+                </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top: 10px;">
+                <button class="btn" id="playBtn">Pause</button>
+                <button class="btn btn-reset" id="resetBtn">Reset Grid</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-top:0; color:#38bdf8;">Thermodynamic State Variables</h3>
+            <div class="stats-grid">
+                <div class="stat-box"><div class="stat-val" id="dispT">0.00</div><div class="stat-lbl">Temp (T*)</div></div>
+                <div class="stat-box"><div class="stat-val" id="dispP">0.00</div><div class="stat-lbl">Pressure (P*)</div></div>
+                <div class="stat-box"><div class="stat-val" id="dispE">0.00</div><div class="stat-lbl">Total Energy (E*)</div></div>
+                <div class="stat-box"><div class="stat-val" id="dispK">0.00</div><div class="stat-lbl">Kinetic Energy (K*)</div></div>
+                <div class="stat-box"><div class="stat-val" id="dispU">0.00</div><div class="stat-lbl">Potential (U*)</div></div>
+                <div class="stat-box"><div class="stat-val" id="dispStep">0</div><div class="stat-lbl">Steps</div></div>
+            </div>
+
+            <h3 style="margin-top:15px; color:#38bdf8; font-size:16px;">Real-Time Energy Conservation</h3>
+            <canvas id="graphCanvas" width="580" height="230"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+const N = 49;
+const L = 500;
+const sigma = 24;
+const dt = 0.02;
+let eps = 1.0;
+let targetT = 0.80;
+let isPaused = false;
+let stepCount = 0;
+
+let pos = [];
+let vel = [];
+let forces = [];
+let historyE = [];
+
+const simCanvas = document.getElementById('simCanvas');
+const ctx = simCanvas.getContext('2d');
+const graphCanvas = document.getElementById('graphCanvas');
+const gCtx = graphCanvas.getContext('2d');
+
+function initSystem() {
+    pos = []; vel = []; forces = []; historyE = []; stepCount = 0;
+    const side = Math.ceil(Math.sqrt(N));
+    const spacing = L / (side + 1);
+    let count = 0;
+
+    for (let i = 0; i < side; i++) {
+        for (let j = 0; j < side; j++) {
+            if (count < N) {
+                pos.push({ x: (i + 1) * spacing, y: (j + 1) * spacing });
+                const angle = Math.random() * 2 * Math.PI;
+                const speed = Math.sqrt(2 * targetT) * (0.8 + 0.4 * Math.random());
+                vel.push({ x: Math.cos(angle) * speed, y: Math.sin(angle) * speed });
+                forces.push({ x: 0, y: 0 });
+                count++;
+            }
+        }
+    }
+    computeForces();
+}
+
+function computeForces() {
+    for (let i = 0; i < N; i++) forces[i] = { x: 0, y: 0 };
+    let potEnergy = 0;
+    let virial = 0;
+    const rCut = 2.8 * sigma;
+    const rCutSq = rCut * rCut;
+
+    for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+            let dx = pos[i].x - pos[j].x;
+            let dy = pos[i].y - pos[j].y;
+            // Minimum Image Convention
+            dx -= L * Math.round(dx / L);
+            dy -= L * Math.round(dy / L);
+            const rSq = dx * dx + dy * dy;
+
+            if (rSq < rCutSq && rSq > 1e-4) {
+                const invR2 = (sigma * sigma) / rSq;
+                const invR6 = invR2 * invR2 * invR2;
+                const invR12 = invR6 * invR6;
+                const fScalar = (48 * eps / rSq) * (invR12 - 0.5 * invR6);
+
+                const fx = fScalar * dx;
+                const fy = fScalar * dy;
+
+                forces[i].x += fx; forces[i].y += fy;
+                forces[j].x -= fx; forces[j].y -= fy;
+
+                potEnergy += 4 * eps * (invR12 - invR6);
+                virial += fScalar * rSq;
+            }
+        }
+    }
+    return { potEnergy, virial };
+}
+
+function stepVerlet() {
+    for (let i = 0; i < N; i++) {
+        pos[i].x += vel[i].x * dt + 0.5 * forces[i].x * dt * dt;
+        pos[i].y += vel[i].y * dt + 0.5 * forces[i].y * dt * dt;
+        pos[i].x = (pos[i].x + L) % L;
+        pos[i].y = (pos[i].y + L) % L;
+    }
+    const oldForces = JSON.parse(JSON.stringify(forces));
+    const { potEnergy, virial } = computeForces();
+
+    let kinEnergy = 0;
+    for (let i = 0; i < N; i++) {
+        vel[i].x += 0.5 * (oldForces[i].x + forces[i].x) * dt;
+        vel[i].y += 0.5 * (oldForces[i].y + forces[i].y) * dt;
+        kinEnergy += 0.5 * (vel[i].x * vel[i].x + vel[i].y * vel[i].y);
+    }
+
+    const curT = kinEnergy / N;
+    // Mild velocity rescaling
+    if (stepCount % 20 === 0 && Math.abs(curT - targetT) > 0.05) {
+        const factor = Math.sqrt(targetT / Math.max(curT, 0.01));
+        for (let i = 0; i < N; i++) {
+            vel[i].x *= factor;
+            vel[i].y *= factor;
+        }
+    }
+
+    const area = L * L;
+    const pressure = (N * curT + 0.5 * virial) / area;
+    const totEnergy = kinEnergy + potEnergy;
+
+    return { curT, pressure, kinEnergy, potEnergy, totEnergy };
+}
+
+function render() {
+    ctx.clearRect(0, 0, L, L);
+    for (let i = 0; i < N; i++) {
+        const p = pos[i];
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, sigma / 2.2, 0, 2 * Math.PI);
+        ctx.fillStyle = '#38bdf8';
+        ctx.shadowColor = '#0284c7';
+        ctx.shadowBlur = 6;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+}
+
+function drawGraph() {
+    gCtx.clearRect(0, 0, 580, 230);
+    gCtx.strokeStyle = '#334155';
+    gCtx.beginPath();
+    gCtx.moveTo(40, 20); gCtx.lineTo(40, 200); gCtx.lineTo(560, 200);
+    gCtx.stroke();
+
+    if (historyE.length < 2) return;
+    const maxPts = 100;
+    const pts = historyE.slice(-maxPts);
+
+    function plotLine(key, color) {
+        gCtx.strokeStyle = color;
+        gCtx.lineWidth = 1.8;
+        gCtx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+            const x = 40 + (i / (maxPts - 1)) * 510;
+            const y = 110 - pts[i][key] * 0.4;
+            if (i === 0) gCtx.moveTo(x, y); else gCtx.lineTo(x, y);
+        }
+        gCtx.stroke();
+    }
+
+    plotLine('tot', '#38bdf8');
+    plotLine('pot', '#ec4899');
+    plotLine('kin', '#eab308');
+}
+
+function loop() {
+    if (!isPaused) {
+        const data = stepVerlet();
+        stepCount++;
+        historyE.push({ tot: data.totEnergy, pot: data.potEnergy, kin: data.kinEnergy });
+        if (historyE.length > 200) historyE.shift();
+
+        document.getElementById('dispT').innerText = data.curT.toFixed(2);
+        document.getElementById('dispP').innerText = (data.pressure * 100).toFixed(2);
+        document.getElementById('dispE').innerText = (data.totEnergy / N).toFixed(2);
+        document.getElementById('dispK').innerText = (data.kinEnergy / N).toFixed(2);
+        document.getElementById('dispU').innerText = (data.potEnergy / N).toFixed(2);
+        document.getElementById('dispStep').innerText = stepCount;
+
+        render();
+        if (stepCount % 3 === 0) drawGraph();
+    }
+    requestAnimationFrame(loop);
+}
+
+document.getElementById('tempSlider').oninput = e => {
+    targetT = parseFloat(e.target.value);
+    document.getElementById('tempVal').innerText = targetT.toFixed(2);
+};
+document.getElementById('epsSlider').oninput = e => {
+    eps = parseFloat(e.target.value);
+    document.getElementById('epsVal').innerText = eps.toFixed(1);
+};
+document.getElementById('playBtn').onclick = () => {
+    isPaused = !isPaused;
+    document.getElementById('playBtn').innerText = isPaused ? 'Resume' : 'Pause';
+};
+document.getElementById('resetBtn').onclick = initSystem;
+
+initSystem();
+loop();
+</script>
+</body>
+</html>
